@@ -1,0 +1,10 @@
+[project]
+name = "i2c-task-for-llm-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cocotb>=2.0.1",
+    "pytest>=9.0.2",
+]
