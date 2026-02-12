@@ -40,6 +40,8 @@ module i2c_master_top #(
   logic [7:0] bytes_rcvd;
 
   logic [7:0] addr_frame;
+  logic       stop_phase;
+  logic       start_wait;
 
   i2c_bit_engine #(.CLK_DIV(CLK_DIV)) u_eng (
     .clk(clk), .rst_n(rst_n),
@@ -69,14 +71,13 @@ module i2c_master_top #(
 
   // defaults
   always_comb begin
+    // default engine enable; may be overridden in specific states
     engine_en     = (st != ST_IDLE);
     busy          = (st != ST_IDLE) && (st != ST_DONE);
     done          = 1'b0;
 
-    load_tx       = 1'b0;
     tx_enable     = 1'b0;
     rx_enable     = 1'b0;
-    tx_byte       = 8'h00;
 
     // Default: release SDA unless explicitly driving low
     sda_drive_low = 1'b0;
@@ -87,14 +88,21 @@ module i2c_master_top #(
       end
 
       // START: ensure SDA goes low while SCL is high
+      // The bit engine starts with SCL high when enable is first asserted.
+      // We wait one cycle (start_wait) to ensure SCL is stable high and
+      // the testbench can sample SDA=1, then drive SDA low to create
+      // the START condition (SDA 1->0 while SCL high).
       ST_START: begin
-        // pull SDA low immediately (engine holds SCL high at enable start)
-        sda_drive_low = 1'b1;
+        if (start_wait) begin
+          // Drive SDA low while SCL is high to create START condition
+          sda_drive_low = 1'b1;
+        end
       end
 
       ST_ADDR: begin
         // shift address byte out; change data on fall, stable on high
-        tx_enable = 1'b1;
+        // Only start shifting once the address byte has been loaded.
+        tx_enable = addr_loaded;
         // open-drain mapping
         sda_drive_low = (tx_bit == 1'b0);
       end
@@ -112,19 +120,25 @@ module i2c_master_top #(
 
       ST_READ_ACK: begin
         // Master drives ACK=0 for all but last byte, then NACK=1 (release)
-        if (bytes_rcvd < (bytes_total - 1)) begin
-          // ACK
+        // bytes_rcvd counts bytes already received; if more remain,
+        // ACK (drive low). For the final byte (bytes_rcvd == bytes_total),
+        // NACK by releasing SDA.
+        if (bytes_rcvd < bytes_total) begin
+          // ACK: more bytes to come
           sda_drive_low = 1'b1;
         end else begin
-          // last byte: NACK
+          // Last byte: NACK
           sda_drive_low = 1'b0;
         end
       end
 
       ST_STOP: begin
-        // STOP: SDA low->high while SCL high.
-        // Ensure SDA is released at STOP time; we rely on timing in seq block.
-        sda_drive_low = 1'b0;
+        // For STOP we force the bit engine off so SCL is held high,
+        // and generate SDA low->high while SCL is high.
+        engine_en = 1'b0;
+        // While stop_phase==0 we actively drive SDA low; once stop_phase==1
+        // we release SDA so the line rises while SCL is high.
+        sda_drive_low = (stop_phase == 1'b0);
       end
 
       ST_DONE: begin
@@ -146,12 +160,19 @@ module i2c_master_top #(
       rvalid     <= 1'b0;
       rdata      <= 8'h00;
       done       <= 1'b0;
+      stop_phase <= 1'b0;
+      start_wait <= 1'b0;
     end else begin
       rvalid <= 1'b0;
       done   <= 1'b0;
 
       if (cmd_start) begin
         ack_error <= 1'b0; // clear on new command
+      end
+
+      // Reset start_wait when leaving ST_START
+      if (st != ST_START) begin
+        start_wait <= 1'b0;
       end
 
       unique case (st)
@@ -161,24 +182,26 @@ module i2c_master_top #(
             bytes_total <= (cmd_len == 0) ? 8'd1 : cmd_len;
             bytes_rcvd  <= 8'd0;
             st          <= ST_START;
+            stop_phase  <= 1'b0;
           end
         end
 
         ST_START: begin
-          // Wait for first SCL falling edge after enabling engine,
-          // then load address and begin shifting.
-          if (tick_f) begin
-            st <= ST_ADDR;
+          // First cycle: set start_wait to ensure SCL is stable high
+          // and testbench can sample SDA=1 before we drive it low.
+          if (!start_wait) begin
+            start_wait <= 1'b1;
+          end else begin
+            // After start_wait, we drive SDA low (in comb logic) to create
+            // START condition. Wait for first SCL falling edge, then begin
+            // address transmission.
+            if (tick_f) begin
+              st <= ST_ADDR;
+            end
           end
         end
 
         ST_ADDR: begin
-          // Load address at the first tick_f inside ST_ADDR
-          if (tick_f && (bytes_rcvd == 0)) begin
-            // use bytes_rcvd==0 as a convenient "loaded" gate (safe here)
-            // pulse load_tx via comb below (see assigns)
-          end
-
           if (tx_done) begin
             st <= ST_ADDR_ACK;
           end
@@ -217,9 +240,15 @@ module i2c_master_top #(
         end
 
         ST_STOP: begin
-          // Wait for an SCL high point, then finish
-          if (tick_r) begin
-            st   <= ST_DONE;
+          // Generate a proper STOP condition with SCL held high:
+          //  - First cycle in ST_STOP: drive SDA low (stop_phase==0).
+          //  - Second cycle: release SDA to create a 0->1 edge while SCL is high,
+          //    then move to ST_DONE.
+          if (!stop_phase) begin
+            stop_phase <= 1'b1;
+          end else begin
+            st         <= ST_DONE;
+            stop_phase <= 1'b0;
           end
         end
 
@@ -233,17 +262,20 @@ module i2c_master_top #(
     end
   end
 
-  // Clean shifter load: pulse exactly once at entry to ST_ADDR
+  // Track when the address byte has been loaded into the shifter
   logic addr_loaded;
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) addr_loaded <= 1'b0;
     else begin
       if (st == ST_IDLE) addr_loaded <= 1'b0;
-      else if (st == ST_ADDR && tick_f) addr_loaded <= 1'b1;
+      else if (load_tx)  addr_loaded <= 1'b1;
     end
   end
 
-  assign load_tx = (st == ST_ADDR) && tick_f && !addr_loaded;
+  // Pulse load_tx once when we first enter ST_ADDR; shifting only starts
+  // afterwards (gated by addr_loaded) so the MSB is stable for the first
+  // SCL rising edge when the slave samples it.
+  assign load_tx = (st == ST_ADDR) && !addr_loaded;
   assign tx_byte = addr_frame;
 
 endmodule
