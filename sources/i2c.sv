@@ -1,1 +1,1 @@
-// D flip-flop module (implementation to be added)
+// Golden reference for D flip-flop (implementation to be added)
