@@ -1,2 +1,5 @@
 
-“Complete the implementation in sources/i2c.sv.”
+
+“
+You must complete the implementation of an I²C master controller in sources/ . The design is driven by a simple command interface and must perform I²C READ transactions of N bytes (N ≥ 1) using 7-bit addressing and open-drain SDA.
+"
