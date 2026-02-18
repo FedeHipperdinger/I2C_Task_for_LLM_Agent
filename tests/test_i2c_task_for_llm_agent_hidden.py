@@ -407,7 +407,7 @@ async def i2c_address_nack_sets_ack_error(dut):
     assert sig_int(dut.ack_error, 0) == 1, "ack_error must be set when address is NACKed"
 
 
-def test_i2c_master_hidden_runner():
+def test_i2c_task_for_llm_agent_hidden_runner():
     """
     Pytest-visible runner. This is what makes pytest collect and execute the cocotb tests.
     If this function is missing or the file name doesn't match pytest patterns, you'll get 'collected 0 items'.
@@ -432,5 +432,5 @@ def test_i2c_master_hidden_runner():
 
     runner.test(
         hdl_toplevel="i2c_master_top",
-        test_module="test_i2c_master_hidden",
+        test_module="test_i2c_task_for_llm_agent_hidden",
     )
