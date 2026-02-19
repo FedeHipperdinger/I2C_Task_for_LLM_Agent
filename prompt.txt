@@ -100,7 +100,7 @@ No repeated start
 No clock stretching (ignore; do not wait for SCL held low by slave)
 
 No multi-master arbitration
-”
+
 
 Common implementation mistakes to avoid:
 - Do not drive SDA high. Keep `sda_o=0` and use only `sda_oe` to drive low (`1`) or release (`0`).
@@ -109,3 +109,4 @@ Common implementation mistakes to avoid:
 - Hold `ack_error` as a registered flag (clear on reset/new `cmd_start`), not a combinational pulse.
 - `done` and `rvalid` must be one-cycle pulses; on successful reads, pulse `rvalid` exactly `cmd_len` times; on address NACK, pulse `done` with zero `rvalid`.
 - Keep byte counting exact: send ACK after every received byte except the final one, where the master must send NACK before STOP.
+"
